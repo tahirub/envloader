@@ -1,4 +1,91 @@
-package loadenv
+// Copyright (c) 2026 tahir
+// SPDX-License-Identifier: MIT
+// Source: https://github.com/tahirub/envloader
+
+// Package envloader loads environment variables and .env files into a struct,
+// using only the standard library.
+//
+// The package is one file with no dependencies, so it can be added with
+// go get or copied straight into a project.
+//
+// # Quick start
+//
+//	type Config struct {
+//		Port int    `env:"PORT,default=8080"`
+//		DSN  string `env:"DATABASE_URL,required"`
+//	}
+//
+//	var cfg Config
+//	if err := envloader.Load(&cfg); err != nil {
+//		log.Fatal(err)
+//	}
+//
+// Load reads .env from the working directory if it exists, then the process
+// environment. A variable set in the environment always wins over the file.
+//
+// # Struct tags
+//
+//	env:"NAME"                 read NAME
+//	env:"NAME,required"        fail if NAME is unset or empty
+//	env:"NAME,default=VALUE"   use VALUE if NAME is unset or empty
+//	env:"-"                    skip the field
+//
+// A field without a tag is read from a variable named exactly like the field.
+// default= must be the last option and takes the rest of the tag, commas
+// included, so `env:"HOSTS,default=a,b"` defaults a slice to [a b].
+// Unexported fields are ignored.
+//
+// # Nested structs
+//
+// Fields of a nested struct are read as if they belonged to the parent. Tag
+// the struct field to prefix every key below it with NAME_:
+//
+//	type Config struct {
+//		Server ServerConfig              // ServerConfig.Port `env:"SERVER_PORT"` reads SERVER_PORT
+//		Cache  CacheConfig `env:"CACHE"` // CacheConfig.Addr `env:"ADDR"` reads CACHE_ADDR
+//	}
+//
+// Embedded structs never add a prefix. Nil pointers to structs are allocated.
+// required and default only apply to leaf fields, and two fields that resolve
+// to the same key are an error.
+//
+// # Supported types
+//
+//   - string, bool, every int, uint and float type, and named types built on them
+//   - time.Duration, parsed by time.ParseDuration ("250ms", "1h30m")
+//   - []byte, set to the raw value
+//   - slices of any supported type, from a comma-separated list with each item trimmed
+//   - any type that implements encoding.TextUnmarshaler, such as time.Time, net.IP and netip.Addr
+//   - pointers to any of the above, allocated only when a value is set
+//
+// bool accepts what strconv.ParseBool accepts. Integers accept Go literal
+// syntax (0x1F, 0o17, 0b101, 1_000), so a leading zero means octal: "010" is 8.
+//
+// # Empty values
+//
+// KEY= counts as unset for required and default, so a line copied from a
+// .env.example falls back to the default or fails as missing. On a field with
+// neither, the empty value is assigned as is: strings become "", slices become
+// empty, and numbers, bools and durations fail to parse.
+//
+// # .env files
+//
+// One KEY=VALUE per line, with whitespace around the key and the value
+// trimmed. Blank lines and lines starting with # are skipped. A value wrapped
+// in matching single or double quotes loses the quotes and keeps everything
+// inside as written. When a key repeats, the last line wins.
+//
+// The format is deliberately small: no inline comments (KEY=a # b is "a # b"),
+// no escape sequences, no $VAR expansion, no multi-line values and no export
+// prefix. Values read from a file are never written to the process environment.
+//
+// # Errors
+//
+// Bind reports every bad field at once, joined with errors.Join, each as a
+// *FieldError. A malformed .env line is a *ParseError. Both wrap one of the
+// Err values, so errors.Is and errors.As work. Neither message includes the
+// value, since values are often secrets and error messages end up in logs.
+package envloader
 
 import (
 	"bufio"
@@ -43,26 +130,19 @@ var (
 	ErrInvalidDuration = errors.New("invalid duration")
 )
 
-// some builtin types can encode and decode themselves, like time.Time or net.IP.
-// if a type implements `encoding.TextUnmarshaler` we hand it the raw string and
-// it auto encode and decode form raw string
-// reflect.TypeOf((*encoding.TextUnmarshaler)(nil)).Elem()
 var textUnmarshaler = reflect.TypeFor[encoding.TextUnmarshaler]()
 
-// time.Duration is an int64 and does NOT implement TextUnmarshaler, so it needs
-// its own parser. match on the type, not the kind: every int64 has kind Int64
 var durationType = reflect.TypeFor[time.Duration]()
 var byteSliceType = reflect.TypeFor[[]byte]()
 
+// ParseError reports a malformed line in a .env file.
 type ParseError struct {
-	File string
-	Line int
+	File string 
+	Line int    
 	Text string
 	Err  error
 }
 
-// Text stays on the struct for callers, but is never printed: a malformed line
-// can hold a secret, and this message ends up in logs.
 func (e *ParseError) Error() string {
 	if e.File == "" {
 		return fmt.Sprintf("line %d: %v", e.Line, e.Err)
@@ -74,16 +154,15 @@ func (e *ParseError) Unwrap() error {
 	return e.Err
 }
 
+// FieldError reports a field that Bind could not set.
 type FieldError struct {
-	Key   string
-	Field string
+	Key   string       
+	Field string      
 	Type  reflect.Type
-	Value string
-	Err   error
+	Value string     
+	Err   error     
 }
 
-// Value stays on the struct for callers, but is never printed, for the same
-// reason as ParseError.Text.
 func (e *FieldError) Error() string {
 	return fmt.Sprintf("%s (%s %s): %v", e.Key, e.Field, e.Type, e.Err)
 }
@@ -118,12 +197,27 @@ type envPair struct {
 	value string
 }
 
+// Loader reads .env files and the environment into a struct. The zero value
+// is ready to use and reads from the real environment and disk; set the
+// fields to replace either one, for example in tests.
 type Loader struct {
+	// MaxLineBytes caps the length of a .env line. Zero or less means 1 MiB.
 	MaxLineBytes int
-	LookupEnv    func(key string) (string, bool)
-	Open         func(name string) (io.ReadCloser, error)
+
+	// LookupEnv is checked before the files. Nil means os.LookupEnv.
+	LookupEnv func(key string) (string, bool)
+
+	// Open opens a .env file by path. Nil means os.Open. To report a missing
+	// file, return an error that wraps fs.ErrNotExist.
+	Open func(name string) (io.ReadCloser, error)
 }
 
+// Load fills the struct that spec points to. Each key is looked up in the
+// environment first and in the .env files second; when files share a key,
+// the later file wins.
+//
+// With no paths, Load reads .env from the working directory and skips it if
+// it does not exist. A path passed explicitly must exist.
 func (l Loader) Load(spec any, paths ...string) error {
 	fileValues, err := l.readPaths(paths...)
 	if err != nil {
@@ -145,11 +239,15 @@ func (l Loader) Load(spec any, paths ...string) error {
 	})
 }
 
+// Load fills spec from the process environment and the .env files at paths,
+// using a zero Loader. See Loader.Load.
 func Load(spec any, paths ...string) error {
 	var loader Loader
 	return loader.Load(spec, paths...)
 }
 
+// Parse reads .env content from r and returns its key/value pairs, without
+// touching the environment. A malformed line is returned as a *ParseError.
 func Parse(r io.Reader) (map[string]string, error) {
 	var loader Loader
 	values := make(map[string]string)
@@ -159,6 +257,14 @@ func Parse(r io.Reader) (map[string]string, error) {
 	return values, nil
 }
 
+// Bind fills the struct that spec points to, calling lookup with each field's
+// key. Use it to load from a source other than the environment and .env, such
+// as a map in tests.
+//
+// Problems with the struct itself, such as a malformed tag or a duplicate key,
+// are reported before lookup is called. Bind fills a copy and stores it in
+// *spec only if every field succeeds, so a failed Bind leaves *spec as it was.
+// The copy is shallow: a struct that *spec already points to is filled in place.
 func Bind(spec any, lookup func(key string) (string, bool)) error {
 	specValue := reflect.ValueOf(spec)
 	if !specValue.IsValid() || specValue.Kind() != reflect.Pointer {
@@ -547,7 +653,13 @@ func setValue(field reflect.Value, raw string) error {
 // input can be a secret. unwrap to the bare reason so the value never reaches the
 // message and errors.Is(err, strconv.ErrRange) still works
 func numReason(err error) error {
-	if numErr, ok := errors.AsType[*strconv.NumError](err); ok {
+	// errors.As keeps this file building on Go 1.22. on Go 1.26+ it can be:
+	//
+	//	if numErr, ok := errors.AsType[*strconv.NumError](err); ok {
+	//		return numErr.Err
+	//	}
+	var numErr *strconv.NumError
+	if errors.As(err, &numErr) {
 		return numErr.Err
 	}
 	return err

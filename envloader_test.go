@@ -1,4 +1,4 @@
-package loadenv_test
+package envloader_test
 
 import (
 	"errors"
@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/tahirub/clipsync/pkg/loadenv"
+	"github.com/tahirub/envloader"
 )
 
 // lookupFrom turns a map into the lookup func Bind and Loader expect.
@@ -71,21 +71,21 @@ func TestParse(t *testing.T) {
 		{name: "a later line wins", input: "A=1\nA=2", want: map[string]string{"A": "2"}},
 
 		// errors
-		{name: "missing separator", input: `KEYVALUE`, wantErr: loadenv.ErrInvalidKeyValuePair},
-		{name: "empty key", input: `=value`, wantErr: loadenv.ErrEmptyKey},
-		{name: "whitespace only key", input: `   =value`, wantErr: loadenv.ErrEmptyKey},
-		{name: "unbalanced double quote", input: `KEY="69`, wantErr: loadenv.ErrUnmatchedQuote},
-		{name: "unbalanced single quote", input: `KEY='69`, wantErr: loadenv.ErrUnmatchedQuote},
-		{name: "mismatched quote pair", input: `KEY="69'`, wantErr: loadenv.ErrUnmatchedQuote},
-		{name: "mismatched quote pair reversed", input: `KEY='69"`, wantErr: loadenv.ErrUnmatchedQuote},
-		{name: "lone double quote", input: `KEY="`, wantErr: loadenv.ErrUnmatchedQuote},
-		{name: "lone single quote", input: `KEY='`, wantErr: loadenv.ErrUnmatchedQuote},
-		{name: "error reports its line", input: "A=1\n# fine\nBROKEN\n", wantErr: loadenv.ErrInvalidKeyValuePair, wantLine: 3},
+		{name: "missing separator", input: `KEYVALUE`, wantErr: envloader.ErrInvalidKeyValuePair},
+		{name: "empty key", input: `=value`, wantErr: envloader.ErrEmptyKey},
+		{name: "whitespace only key", input: `   =value`, wantErr: envloader.ErrEmptyKey},
+		{name: "unbalanced double quote", input: `KEY="69`, wantErr: envloader.ErrUnmatchedQuote},
+		{name: "unbalanced single quote", input: `KEY='69`, wantErr: envloader.ErrUnmatchedQuote},
+		{name: "mismatched quote pair", input: `KEY="69'`, wantErr: envloader.ErrUnmatchedQuote},
+		{name: "mismatched quote pair reversed", input: `KEY='69"`, wantErr: envloader.ErrUnmatchedQuote},
+		{name: "lone double quote", input: `KEY="`, wantErr: envloader.ErrUnmatchedQuote},
+		{name: "lone single quote", input: `KEY='`, wantErr: envloader.ErrUnmatchedQuote},
+		{name: "error reports its line", input: "A=1\n# fine\nBROKEN\n", wantErr: envloader.ErrInvalidKeyValuePair, wantLine: 3},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := loadenv.Parse(strings.NewReader(tt.input))
+			got, err := envloader.Parse(strings.NewReader(tt.input))
 
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
@@ -95,9 +95,9 @@ func TestParse(t *testing.T) {
 					t.Fatalf("Parse(%q) = %v on error, want nil", tt.input, got)
 				}
 				if tt.wantLine != 0 {
-					pe, ok := errors.AsType[*loadenv.ParseError](err)
-					if !ok {
-						t.Fatalf("Parse(%q) error is %T, want *loadenv.ParseError", tt.input, err)
+					var pe *envloader.ParseError
+					if !errors.As(err, &pe) {
+						t.Fatalf("Parse(%q) error is %T, want *envloader.ParseError", tt.input, err)
 					}
 					if pe.Line != tt.wantLine {
 						t.Fatalf("Parse(%q) error line = %d, want %d", tt.input, pe.Line, tt.wantLine)
@@ -137,7 +137,7 @@ func TestBindTagNames(t *testing.T) {
 	}
 
 	var got spec
-	if err := loadenv.Bind(&got, lookupFrom(env)); err != nil {
+	if err := envloader.Bind(&got, lookupFrom(env)); err != nil {
 		t.Fatalf("Bind returned unexpected error: %v", err)
 	}
 
@@ -165,9 +165,9 @@ func TestBindMalformedTags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := loadenv.Bind(tt.spec, lookupFrom(nil))
-			if !errors.Is(err, loadenv.ErrMalformedTag) {
-				t.Fatalf("error = %v, want %v", err, loadenv.ErrMalformedTag)
+			err := envloader.Bind(tt.spec, lookupFrom(nil))
+			if !errors.Is(err, envloader.ErrMalformedTag) {
+				t.Fatalf("error = %v, want %v", err, envloader.ErrMalformedTag)
 			}
 		})
 	}
@@ -204,19 +204,19 @@ func TestBindRequiredAndDefault(t *testing.T) {
 		{
 			name:    "missing required key",
 			env:     map[string]string{},
-			wantErr: loadenv.ErrMissingValue,
+			wantErr: envloader.ErrMissingValue,
 		},
 		{
 			name:    "empty required key",
 			env:     map[string]string{"DSN": ""},
-			wantErr: loadenv.ErrMissingValue,
+			wantErr: envloader.ErrMissingValue,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var got spec
-			err := loadenv.Bind(&got, lookupFrom(tt.env))
+			err := envloader.Bind(&got, lookupFrom(tt.env))
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("error = %v, want %v", err, tt.wantErr)
@@ -263,7 +263,7 @@ func TestBindTextUnmarshaler(t *testing.T) {
 		"TIMEOUT": "30s",
 		"CUSTOM":  "hello",
 	}
-	if err := loadenv.Bind(&got, lookupFrom(env)); err != nil {
+	if err := envloader.Bind(&got, lookupFrom(env)); err != nil {
 		t.Fatalf("Bind returned unexpected error: %v", err)
 	}
 
@@ -284,7 +284,7 @@ func TestBindTextUnmarshaler(t *testing.T) {
 	var bad struct {
 		R rejecter `env:"R"`
 	}
-	if err := loadenv.Bind(&bad, lookupFrom(map[string]string{"R": "x"})); !errors.Is(err, errRejected) {
+	if err := envloader.Bind(&bad, lookupFrom(map[string]string{"R": "x"})); !errors.Is(err, errRejected) {
 		t.Errorf("value receiver: error = %v, want %v", err, errRejected)
 	}
 }
@@ -304,7 +304,7 @@ func TestLoaderLoad(t *testing.T) {
 	}
 
 	t.Run("environment wins over the file", func(t *testing.T) {
-		loader := loadenv.Loader{LookupEnv: lookupFrom(map[string]string{"A": "env"}), Open: open}
+		loader := envloader.Loader{LookupEnv: lookupFrom(map[string]string{"A": "env"}), Open: open}
 		var got spec
 		if err := loader.Load(&got); err != nil {
 			t.Fatalf("Load returned unexpected error: %v", err)
@@ -315,7 +315,7 @@ func TestLoaderLoad(t *testing.T) {
 	})
 
 	t.Run("a missing implicit .env is not an error", func(t *testing.T) {
-		loader := loadenv.Loader{LookupEnv: lookupFrom(nil), Open: func(string) (io.ReadCloser, error) {
+		loader := envloader.Loader{LookupEnv: lookupFrom(nil), Open: func(string) (io.ReadCloser, error) {
 			return nil, fs.ErrNotExist
 		}}
 		var got spec
@@ -325,7 +325,7 @@ func TestLoaderLoad(t *testing.T) {
 	})
 
 	t.Run("a path the caller names must exist", func(t *testing.T) {
-		loader := loadenv.Loader{LookupEnv: lookupFrom(nil), Open: open}
+		loader := envloader.Loader{LookupEnv: lookupFrom(nil), Open: open}
 		var got spec
 		if err := loader.Load(&got, "missing.env"); !errors.Is(err, fs.ErrNotExist) {
 			t.Fatalf("error = %v, want %v", err, fs.ErrNotExist)
@@ -337,7 +337,7 @@ func TestLoaderLoad(t *testing.T) {
 func TestErrorsDoNotEchoValues(t *testing.T) {
 	const secret = "s3cr3t-value"
 
-	_, err := loadenv.Parse(strings.NewReader(`R2_SECRET_ACCESS_KEY="` + secret))
+	_, err := envloader.Parse(strings.NewReader(`R2_SECRET_ACCESS_KEY="` + secret))
 	if err == nil {
 		t.Fatal("expected a parse error for the unmatched quote")
 	}
@@ -348,7 +348,7 @@ func TestErrorsDoNotEchoValues(t *testing.T) {
 	var spec struct {
 		Port int `env:"PORT"`
 	}
-	err = loadenv.Bind(&spec, func(string) (string, bool) { return secret, true })
+	err = envloader.Bind(&spec, func(string) (string, bool) { return secret, true })
 	if err == nil {
 		t.Fatal("expected a field error for a non-numeric port")
 	}
